@@ -1,0 +1,24 @@
+
+
+
+• 📁 メイン構成ファイル群
+	• app.py （全体のBootstrapレイアウト）
+	• models.py （プルダウン・状態の連動モデル）
+	• views.py （表示全体のインターフェース管理）
+• 📁 タブ画面ごとのデザイン構造（NEW!✨）
+	• view_base.py （共通データ・リポジトリ処理）
+	• view_tabs.py （各タブクラスへの処理の分配）
+	• tab_monitor.py （通常監視画面・目次とグラフ）
+	• tab_dashboard.py （お気に入りダッシュボード）
+	• tab_anomaly.py （AI異常検知表示画面）
+• 📁 バックエンド処理層
+	• charts.py （Matplotlibグラフ描画処理）
+	• data_loader.py （PandasのCSVロードとbps前処理）
+	• detectors.py （異常スコア判定ロジック）
+
+pip install panel
+
+panel serve app.py --show
+panel serve app.py --port 80 --index app
+panel serve app.py --port 80 --index app --allow-websocket-origin=127.0.0.1
+

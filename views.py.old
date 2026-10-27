@@ -1,0 +1,197 @@
+# views.py （列数指定対応版）
+import os
+import glob
+import json
+import panel as pn
+from natsort import natsorted
+import pandas as pd
+
+from models import get_base_dir_path, DASHBOARD_REGISTRY
+from charts import make_matplotlib_figure, make_anomaly_figure
+
+class TabRenderer:
+    """各タブのグラフグリッドをレンダリングするクラス"""
+    def __init__(self, state):
+        self.state = state
+        # 💡 修正箇所: FlexBox から、列数を直接指定できる GridBox に変更
+        self.main_graph_grid = pn.GridBox(ncols=2, sizing_mode="stretch_width")
+        self.dashboard_graph_grid = pn.GridBox(ncols=2, sizing_mode="stretch_width")
+        self.anomaly_graph_grid = pn.GridBox(ncols=2, sizing_mode="stretch_width")
+
+    def add_to_dashboard(self, filename, desc):
+        """ダッシュボードへのお気に入り登録処理"""
+        exists = any(i["yyyymm"] == self.state.yyyymm and i["dd"] == self.state.dd and i["switch"] == self.state.switch and i["filename"] == filename and i["base_id"] == self.state.base_id for i in DASHBOARD_REGISTRY)
+        if not exists:
+            DASHBOARD_REGISTRY.append({
+                "base_id": self.state.base_id, "mode": self.state.mode, "yyyymm": self.state.yyyymm, "dd": self.state.dd,
+                "start_dd": self.state.start_dd, "end_dd": self.state.end_dd, "switch": self.state.switch,
+                "filename": filename, "desc": desc
+            })
+            pn.state.notifications.success(f"🔌 {filename.replace('.csv','')} を登録しました！")
+            self.render_dashboard_tab()
+
+
+    def delete_dashboard_item(self, idx):
+        if 0 <= idx < len(DASHBOARD_REGISTRY):
+            DASHBOARD_REGISTRY.pop(idx)
+            # 💡 修正箇所：削除されたことを通常モニター側のボタンにも即時反映させるため、両方再描画する
+            self.render_all() 
+
+
+    def render_all(self):
+        """全タブを一括再描画"""
+        self.render_main_tab()
+        self.render_dashboard_tab()
+        self.render_anomaly_tab()
+
+
+# views.py の一部（render_main_tab メソッド内の修正）
+
+    def render_main_tab(self):
+        self.main_graph_grid.clear()
+        self.main_graph_grid.ncols = self.state.cols
+
+        actual_base = get_base_dir_path(self.state.base_id)
+        target_dir = os.path.join(actual_base, self.state.yyyymm, self.state.dd, self.state.switch)
+
+        info_json_path = os.path.join(target_dir, "info.json")
+        info_dic = {}
+        if os.path.exists(info_json_path):
+            with open(info_json_path, 'r', encoding='utf-8') as f:
+                info_dic = json.load(f)
+
+        csv_filenames = natsorted([os.path.basename(f) for f in glob.glob(os.path.join(target_dir, "*.csv"))])
+        if not csv_filenames:
+            self.main_graph_grid.append(pn.pane.Markdown("### ⚠️ CSVファイルが見つかりません。"))
+            return
+
+        for fname in csv_filenames:
+            if_name = fname.replace('.csv', '')
+            desc = info_dic.get(if_name, {}).get("desc", "")
+            speed = info_dic.get(if_name, {}).get("speed", "")
+
+            fig = make_matplotlib_figure(
+                actual_base, self.state.mode, self.state.yyyymm, self.state.dd, self.state.start_dd, self.state.end_dd,
+                self.state.switch, fname, self.state.cols, self.state.start_hour, self.state.end_hour, speed, desc
+            )
+
+            # 💡 修正箇所：このグラフがすでにダッシュボードに登録されているか事前に判定
+            is_registered = any(
+                i["yyyymm"] == self.state.yyyymm and
+                i["dd"] == self.state.dd and
+                i["switch"] == self.state.switch and
+                i["filename"] == fname and
+                i["base_id"] == self.state.base_id
+                for i in DASHBOARD_REGISTRY
+            )
+
+            # 💡 修正箇所：すでに登録済みの場合は「登録中」状態、未登録なら通常状態でボタンを初期化
+            if is_registered:
+                reg_btn = pn.widgets.Button(name="⏳ 登録中", button_type="light", disabled=True, width=160, align="end")
+            else:
+                reg_btn = pn.widgets.Button(name="＋ ダッシュボード登録", button_type="primary", width=160, align="end")
+
+            # 💡 修正箇所：クリックされたら、即座にボタンを「登録中」に固定して処理を委譲
+            def create_click_handler(f_name=fname, d_desc=desc, button=reg_btn):
+                def handle_click(event):
+                    # ボタンを即座に「登録中（無効化）」に変更
+                    button.disabled = True
+                    button.button_type = "light"
+                    button.name = "⏳ 登録中"
+
+                    # 実際の登録処理を実行
+                    self.add_to_dashboard(f_name, d_desc)
+                return handle_click
+
+            if not is_registered:
+                reg_btn.on_click(create_click_handler())
+
+            card_content = pn.Column(
+                pn.pane.Matplotlib(fig, tight=True, format="png", dpi=110, sizing_mode="stretch_width"),
+                pn.layout.Divider(),
+                reg_btn,
+                sizing_mode="stretch_width"
+            )
+
+            self.main_graph_grid.append(pn.Card(
+                card_content,
+                title=f"🔌 {if_name}",
+                header_background="#0072B2",
+                header_color="white",
+                collapsible=False,
+                margin=10,
+                sizing_mode="stretch_width"
+            ))
+
+
+    def render_dashboard_tab(self):
+        self.dashboard_graph_grid.clear()
+        # 💡 修正箇所: 列数をリアルタイムに反映
+        self.dashboard_graph_grid.ncols = self.state.cols
+        
+        if not DASHBOARD_REGISTRY:
+            self.dashboard_graph_grid.append(pn.pane.Markdown("### 📌 ダッシュボードに登録されたグラフはありません。"))
+            return
+
+        for idx, item in enumerate(DASHBOARD_REGISTRY):
+            fig = make_matplotlib_figure(
+                get_base_dir_path(item["base_id"]), self.state.mode, self.state.yyyymm, self.state.dd, self.state.start_dd, self.state.end_dd,
+                item["switch"], item["filename"], self.state.cols, self.state.start_hour, self.state.end_hour, desc=item["desc"]
+            )
+            del_btn = pn.widgets.Button(name="× 削除", button_type="danger", width=80, align="end")
+            del_btn.on_click(lambda e, i=idx: self.delete_dashboard_item(i))
+            
+            card_content = pn.Column(
+                pn.pane.Matplotlib(fig, tight=True, format="png", dpi=110, sizing_mode="stretch_width"),
+                pn.layout.Divider(),
+                del_btn,
+                sizing_mode="stretch_width"
+            )
+            
+            self.dashboard_graph_grid.append(pn.Card(
+                card_content,
+                title=f"⭐ [{item['base_id']}] {item['switch']} - {item['filename']}",
+                header_background="#D55E00",
+                header_color="white",
+                collapsible=False,
+                margin=10,
+                sizing_mode="stretch_width"
+            ))
+
+    def render_anomaly_tab(self):
+        self.anomaly_graph_grid.clear()
+        # 💡 修正箇所: 列数をリアルタイムに反映
+        self.anomaly_graph_grid.ncols = self.state.cols
+        
+        if not (self.state.start_dd and self.state.end_dd and self.state.switch):
+            self.anomaly_graph_grid.append(pn.pane.Markdown("### 🔍 条件を指定してください。"))
+            return
+
+        actual_base = get_base_dir_path(self.state.base_id)
+        scan_date_dir = os.path.join(actual_base, pd.to_datetime(self.state.start_dd).strftime("%Y%m"), pd.to_datetime(self.state.start_dd).strftime("%d"), self.state.switch)
+        csv_filenames = natsorted([os.path.basename(f) for f in glob.glob(os.path.join(scan_date_dir, "*.csv"))])
+
+        if not csv_filenames:
+            self.anomaly_graph_grid.append(pn.pane.Markdown("### ⚠️ CSVファイルが見つかりません。"))
+            return
+
+        from detectors import AnomalyDetectors
+        logics_map = AnomalyDetectors.get_available_logics()
+        inv_logics_map = {v: k for k, v in logics_map.items()}
+        selected_logic_key = inv_logics_map.get(self.state.anomaly_logic, "stat_threshold")
+
+        for fname in csv_filenames:
+            fig = make_anomaly_figure(
+                actual_base, self.state.start_dd, self.state.end_dd, self.state.switch, fname,
+                selected_logic_key,
+                self.state.start_hour, self.state.end_hour, self.state.cols
+            )
+            self.anomaly_graph_grid.append(pn.Card(
+                pn.pane.Matplotlib(fig, tight=True, format="png", dpi=110, sizing_mode="stretch_width"),
+                title=f"🧠 {fname.replace('.csv','')}", 
+                header_background="#CC79A7", 
+                header_color="white", 
+                collapsible=False, 
+                margin=10,
+                sizing_mode="stretch_width"
+            ))
